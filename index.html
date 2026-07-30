@@ -970,6 +970,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
   }
   function getEngineModeLabel(pulseEnabled, bbStraightEnabled, bbInvertedEnabled, markovEnabled = false, cadenceEnabled = false, scoutEnabled = false, randomEnabled = false) {
     const bbMode = randomEnabled ? "Random" : cadenceEnabled ? "Cadence" : markovEnabled ? "Markov" : bbStraightEnabled && bbInvertedEnabled ? "Inverted BB" : bbStraightEnabled ? "Straight BB" : "BB Off";
+    if (scoutEnabled && bbMode === "BB Off") return "SCOUT Armed / No Engine";
     if (scoutEnabled && pulseEnabled) return "SCOUT + PULSE";
     if (scoutEnabled) return "SCOUT";
     if (pulseEnabled && bbMode !== "BB Off") return `PULSE + ${bbMode}`;
@@ -984,6 +985,18 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     const cadence = cadenceForecast(history);
     const random = randomForecast(history);
     const mode = getEngineModeLabel(pulseEnabled, bbStraightEnabled, bbInvertedEnabled, markovEnabled, cadenceEnabled, scoutEnabled, randomEnabled);
+    const anyEngineArmed = bbStraightEnabled || bbInvertedEnabled || markovEnabled || cadenceEnabled || randomEnabled;
+    if (scoutEnabled && !anyEngineArmed) {
+      return {
+        group: null,
+        numbers: [],
+        confidence: 0,
+        tier: "No Prediction",
+        reason: "Scout is armed but no Play Mode engine is selected \u2014 pick one to activate Scout.",
+        source: "NONE",
+        mode
+      };
+    }
     if (scoutEnabled) {
       const picked = getScoutSelectedEngine(history);
       const forecastByPick = { BB_STRAIGHT: straight, BB_INVERTED: inverted, MARKOV: markov, CADENCE: cadence, RANDOM: random };
@@ -1690,8 +1703,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     { key: "INVERTED", label: "Inverted" },
     { key: "MARKOV", label: "Markov" },
     { key: "CADENCE", label: "Cadence" },
-    { key: "RANDOM", label: "Random" },
-    { key: "SCOUT", label: "Scout" }
+    { key: "RANDOM", label: "Random" }
   ];
   const ENGINE_SOURCE_LABEL = {
     BB_STRAIGHT: "Straight",
@@ -1717,21 +1729,24 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
     const saved = useMemo(() => loadSavedSession(), []);
     const [history, setHistory] = useState(saved?.history ?? []);
     const [pulseOn, setPulseOn] = useState(saved?.pulseOn ?? false);
-    const [engineMode, setEngineMode] = useState(saved?.engineMode ?? "STRAIGHT");
+    const [scoutOn, setScoutOn] = useState(saved?.scoutOn ?? false);
+    const [engineMode, setEngineMode] = useState(
+      saved?.engineMode && saved.engineMode !== "SCOUT" ? saved.engineMode : "STRAIGHT"
+    );
     const [showRestoredNote, setShowRestoredNote] = useState(!!saved && saved.history.length > 0);
     useEffect(() => {
       try {
-        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ history, pulseOn, engineMode }));
+        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ history, pulseOn, scoutOn, engineMode }));
       } catch (e) {
       }
-    }, [history, pulseOn, engineMode]);
+    }, [history, pulseOn, scoutOn, engineMode]);
     const flags = {
       straight: engineMode === "STRAIGHT",
       inverted: engineMode === "INVERTED",
       markov: engineMode === "MARKOV",
       cadence: engineMode === "CADENCE",
       random: engineMode === "RANDOM",
-      scout: engineMode === "SCOUT"
+      scout: scoutOn
     };
     const decision = useMemo(() => {
       const d = getActiveDecision(history, pulseOn, flags.straight, flags.inverted, flags.markov, flags.cadence, flags.scout, flags.random);
@@ -1743,10 +1758,10 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
         }
       }
       return d;
-    }, [history, pulseOn, engineMode]);
+    }, [history, pulseOn, scoutOn, engineMode]);
     const halt = useMemo(
       () => flags.scout ? getEngineHaltState(history) : { haltActive: false, allDeclining: false, anyRecovering: false },
-      [history, engineMode]
+      [history, scoutOn, engineMode]
     );
     const logHand = (outcome) => {
       setShowRestoredNote(false);
@@ -1772,13 +1787,18 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       setHistory([]);
       setShowRestoredNote(false);
     };
-    const isHalted = flags.scout && halt.haltActive;
+    const isHalted = scoutOn && halt.haltActive;
     const side = !isHalted && decision.group ? groupToBaccaratSide(decision.group) : null;
     const predictionLabel = isHalted ? "PAUSED" : side ? baccaratOutcomeLabel(side) : "NO PREDICTION";
     const accent = isHalted ? "#f5a524" : side === "P" ? "#3b82f6" : side === "B" ? "#e11d48" : "#6b7280";
-    const sourceLabel = flags.scout ? `Scout \u2192 ${ENGINE_SOURCE_LABEL[decision.source] || "\u2014"}` : ENGINE_SOURCE_LABEL[decision.source] || "\u2014";
+    const scoutArmedIdle = scoutOn && !flags.straight && !flags.inverted && !flags.markov && !flags.cadence && !flags.random;
+    const sourceLabel = scoutArmedIdle
+      ? "Scout \u2014 armed, select an engine"
+      : scoutOn
+      ? `Scout \u2192 ${ENGINE_SOURCE_LABEL[decision.source] || "\u2014"}`
+      : ENGINE_SOURCE_LABEL[decision.source] || "\u2014";
     const pulseObserving = pulseOn && decision.pulseGate && decision.pulseGate.allow === false;
-    return /* @__PURE__ */ React.createElement("div", { style: styles.app }, /* @__PURE__ */ React.createElement("div", { style: styles.topBar }, /* @__PURE__ */ React.createElement("div", { style: styles.handCount }, "HAND ", history.length + 1), /* @__PURE__ */ React.createElement("button", { style: styles.pulseToggle(pulseOn), onClick: () => setPulseOn((v) => !v) }, /* @__PURE__ */ React.createElement("span", { style: styles.pulseDot(pulseOn) }), "PULSE ", pulseOn ? "ON" : "OFF")), showRestoredNote && /* @__PURE__ */ React.createElement("div", { style: styles.restoredNote }, /* @__PURE__ */ React.createElement("span", null, "Restored your last session \u2014 ", history.length, " hand", history.length === 1 ? "" : "s", " logged."), /* @__PURE__ */ React.createElement("button", { style: styles.restoredDismiss, onClick: () => setShowRestoredNote(false) }, "\u2715")), /* @__PURE__ */ React.createElement("div", { style: styles.engineRow }, ENGINE_MODES.map((m) => /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { style: styles.app }, /* @__PURE__ */ React.createElement("div", { style: styles.topBar }, /* @__PURE__ */ React.createElement("div", { style: styles.handCount }, "HAND ", history.length + 1), /* @__PURE__ */ React.createElement("div", { style: styles.toggleGroup }, /* @__PURE__ */ React.createElement("button", { style: styles.pulseToggle(pulseOn), onClick: () => setPulseOn((v) => !v) }, /* @__PURE__ */ React.createElement("span", { style: styles.pulseDot(pulseOn) }), "PULSE ", pulseOn ? "ON" : "OFF"), /* @__PURE__ */ React.createElement("button", { style: styles.scoutToggle(scoutOn), onClick: () => setScoutOn((v) => !v) }, /* @__PURE__ */ React.createElement("span", { style: styles.scoutDot(scoutOn) }), "SCOUT ", scoutOn ? "ON" : "OFF"))), showRestoredNote && /* @__PURE__ */ React.createElement("div", { style: styles.restoredNote }, /* @__PURE__ */ React.createElement("span", null, "Restored your last session \u2014 ", history.length, " hand", history.length === 1 ? "" : "s", " logged."), /* @__PURE__ */ React.createElement("button", { style: styles.restoredDismiss, onClick: () => setShowRestoredNote(false) }, "\u2715")), /* @__PURE__ */ React.createElement("div", { style: styles.engineRow }, ENGINE_MODES.map((m) => /* @__PURE__ */ React.createElement(
       "button",
       {
         key: m.key,
@@ -1866,9 +1886,35 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
       background: on ? "#22c594" : "#454b54",
       boxShadow: on ? "0 0 8px #22c594" : "none"
     }),
+    scoutToggle: (on) => ({
+      display: "flex",
+      alignItems: "center",
+      gap: 7,
+      background: on ? "rgba(245,165,36,0.14)" : "#12161d",
+      border: `1px solid ${on ? "#f5a524" : "#2a3038"}`,
+      color: on ? "#f5a524" : "#8b95a3",
+      fontSize: 11,
+      fontWeight: 900,
+      letterSpacing: 0.8,
+      padding: "8px 12px",
+      borderRadius: 999,
+      cursor: "pointer"
+    }),
+    scoutDot: (on) => ({
+      width: 7,
+      height: 7,
+      borderRadius: 999,
+      background: on ? "#f5a524" : "#454b54",
+      boxShadow: on ? "0 0 8px #f5a524" : "none"
+    }),
+    toggleGroup: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    },
     engineRow: {
       display: "grid",
-      gridTemplateColumns: "repeat(3, 1fr)",
+      gridTemplateColumns: "repeat(5, 1fr)",
       gap: 6
     },
     engineButton: (active) => ({
